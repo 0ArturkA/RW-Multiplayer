@@ -12,6 +12,7 @@ using Verse.Steam;
 namespace Multiplayer.Client
 {
     [StaticConstructorOnStartup]
+    [HotSwappable]
     public class ChatWindow : Window
     {
         public static ChatWindow Opened => Find.WindowStack?.WindowOfType<ChatWindow>();
@@ -111,9 +112,16 @@ namespace Multiplayer.Client
                     if (p.type == PlayerType.Steam)
                     {
                         var steamIcon = new Rect(rect.xMax - 24f, 0, 24f, 24f);
+                        rect.width -= 24f;
                         GUI.DrawTexture(steamIcon, ContentSourceUtility.ContentSourceIcon_SteamWorkshop);
-                        TooltipHandler.TipRegion(steamIcon, $"{p.steamPersonaName}\n{p.steamId}");
+                        TooltipHandler.TipRegion(steamIcon, new TipSignal($"{p.steamPersonaName}\n{p.steamId}", p.id));
                     }
+
+                    string toolTip = $"{p.ticksBehind >> 1} ticks behind";
+                    if ((p.ticksBehind & 1) != 0)
+                        toolTip += "\n(Simulating)";
+
+                    TooltipHandler.TipRegion(rect, new TipSignal(toolTip, p.id));
                 },
                 entryLabelColor: e => GetColor(e.status)
             );
@@ -233,6 +241,12 @@ namespace Multiplayer.Client
 
         private void DrawChat(Rect inRect)
         {
+            if ((Event.current.type == EventType.mouseDown || KeyBindingDefOf.Cancel.KeyDownEvent) && !GUI.GetNameOfFocusedControl().NullOrEmpty())
+            {
+                Event.current.Use();
+                UI.UnfocusCurrentControl();
+            }
+
             Rect outRect = new Rect(0f, 0f, inRect.width, inRect.height - 30f);
             Rect viewRect = new Rect(0f, 0f, inRect.width - 16f, messagesHeight + 10f);
 
@@ -301,10 +315,7 @@ namespace Multiplayer.Client
 
             GUI.EndGroup();
 
-            if (Event.current.type == EventType.mouseDown && !GUI.GetNameOfFocusedControl().NullOrEmpty())
-                UI.UnfocusCurrentControl();
-
-            if (!hasBeenFocused)
+            if (!hasBeenFocused && Event.current.type == EventType.repaint)
             {
                 chatScroll.y = messagesHeight;
 

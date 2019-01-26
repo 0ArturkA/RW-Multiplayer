@@ -16,6 +16,7 @@ using Verse.Sound;
 
 namespace Multiplayer.Client
 {
+    [HotSwappable]
     public class MultiplayerSession : IConnectionStatusListener
     {
         public string gameName;
@@ -123,7 +124,16 @@ namespace Multiplayer.Client
 
             if (reason == MpDisconnectReason.Generic) reasonKey = reader.ReadString();
 
-            if (reason == MpDisconnectReason.Protocol) { reasonKey = "MpWrongProtocol"; descKey = "MpWrongModVersionInfo"; }
+            if (reason == MpDisconnectReason.Protocol)
+            {
+                reasonKey = "MpWrongProtocol";
+
+                string strVersion = data.Length != 0 ? reader.ReadString() : "0.4.2";
+                int proto = data.Length != 0 ? reader.ReadInt32() : 11;
+
+                disconnectInfo = "MpWrongMultiplayerVersionInfo".Translate(strVersion, proto);
+            }
+
             if (reason == MpDisconnectReason.UsernameLength) { reasonKey = "MpInvalidUsernameLength"; descKey = "MpChangeUsernameInfo"; }
             if (reason == MpDisconnectReason.UsernameChars) { reasonKey = "MpInvalidUsernameChars"; descKey = "MpChangeUsernameInfo"; }
             if (reason == MpDisconnectReason.UsernameAlreadyOnline) { reasonKey = "MpInvalidUsernameAlreadyPlaying"; descKey = "MpChangeUsernameInfo"; }
@@ -139,7 +149,7 @@ namespace Multiplayer.Client
 
             disconnectReason = reason;
             disconnectReasonKey = reasonKey?.Translate();
-            disconnectInfo = descKey?.Translate();
+            disconnectInfo = disconnectInfo ?? descKey?.Translate();
         }
 
         public void Connected()
@@ -154,6 +164,11 @@ namespace Multiplayer.Client
                 Find.WindowStack.Add(new DisconnectedWindow(disconnectReasonKey, disconnectInfo) { returnToServerBrowser = Multiplayer.Client.State != ConnectionStateEnum.ClientPlaying });
             else
                 Find.WindowStack.Add(new DefMismatchWindow(mods));
+        }
+
+        public void ReapplyPrefs()
+        {
+            Application.runInBackground = true;
         }
     }
 
@@ -171,6 +186,7 @@ namespace Multiplayer.Client
         public int id;
         public string username;
         public int latency;
+        public int ticksBehind;
         public PlayerType type;
         public PlayerStatus status;
 
@@ -207,11 +223,14 @@ namespace Multiplayer.Client
             var steamId = data.ReadULong();
             var steamName = data.ReadString();
 
+            var ticksBehind = data.ReadInt32();
+
             return new PlayerInfo(id, username, latency, type)
             {
                 status = status,
                 steamId = steamId,
-                steamPersonaName = steamName
+                steamPersonaName = steamName,
+                ticksBehind = ticksBehind
             };
         }
     }

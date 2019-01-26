@@ -21,7 +21,6 @@ using zip::Ionic.Zip;
 
 namespace Multiplayer.Client
 {
-    [StaticConstructorOnStartup]
     [HotSwappable]
     public class ServerBrowser : Window
     {
@@ -106,7 +105,7 @@ namespace Multiplayer.Client
                 var saveFile = new SaveFile(Path.GetFileNameWithoutExtension(file.Name), false, file);
 
                 using (var stream = file.OpenRead())
-                    ReadSaveInfo(stream, out saveFile.rwVersion, out saveFile.modNames, out saveFile.modIds);
+                    ReadSaveInfo(stream, saveFile);
 
                 spSaves.Add(saveFile);
             }
@@ -129,17 +128,23 @@ namespace Multiplayer.Client
 
                 mpReplays.Add(saveFile);
 
-                using (var zip = replay.ZipFile)
-                    ReadSaveInfo(zip["world/000_save"].OpenReader(), out saveFile.rwVersion, out saveFile.modNames, out saveFile.modIds);
+                if (!replay.info.rwVersion.NullOrEmpty())
+                {
+                    saveFile.rwVersion = replay.info.rwVersion;
+                    saveFile.modIds = replay.info.modIds.ToArray();
+                    saveFile.modNames = replay.info.modNames.ToArray();
+                    saveFile.modAssemblyHashes = replay.info.modAssemblyHashes.ToArray();
+                }
+                else
+                {
+                    using (var zip = replay.ZipFile)
+                        ReadSaveInfo(zip["world/000_save"].OpenReader(), saveFile);
+                }
             }
         }
 
-        private void ReadSaveInfo(Stream stream, out string rwVersion, out string[] modNames, out string[] modIds)
+        private void ReadSaveInfo(Stream stream, SaveFile save)
         {
-            rwVersion = null;
-            modNames = new string[0];
-            modIds = new string[0];
-
             using (var reader = new XmlTextReader(stream))
             {
                 reader.ReadToNextElement(); // savedGame
@@ -148,14 +153,16 @@ namespace Multiplayer.Client
                 if (reader.Name != "meta") return;
 
                 reader.ReadToDescendant("gameVersion");
-                rwVersion = VersionControl.VersionStringWithoutRev(reader.ReadString());
+                save.rwVersion = VersionControl.VersionStringWithoutRev(reader.ReadString());
 
                 reader.ReadToNextSibling("modIds");
-                modIds = reader.ReadStrings();
+                save.modIds = reader.ReadStrings();
 
                 reader.ReadToNextSibling("modNames");
-                modNames = reader.ReadStrings();
+                save.modNames = reader.ReadStrings();
             }
+
+            save.modAssemblyHashes = new int[save.modNames.Length];
         }
 
         private bool mpCollapsed, spCollapsed;
@@ -247,8 +254,10 @@ namespace Multiplayer.Client
             {
                 if (Widgets.ButtonText(new Rect(width, 0, 120, 40), "MpWatchReplay".Translate()))
                 {
-                    Close(false);
-                    Replay.LoadReplay(file.file);
+                    CheckGameVersionAndMods(
+                        file,
+                        () => { Close(false); Replay.LoadReplay(file.file); }
+                    );
                 }
 
                 width += 120 + 10;
@@ -256,8 +265,10 @@ namespace Multiplayer.Client
 
             if (Widgets.ButtonText(new Rect(width, 0, 120, 40), "MpHostButton".Translate()))
             {
-                Close(false);
-                Find.WindowStack.Add(new HostWindow(file) { returnToServerBrowser = true });
+                CheckGameVersionAndMods(
+                    file, 
+                    () => { Close(false); Find.WindowStack.Add(new HostWindow(file) { returnToServerBrowser = true }); }
+                );
             }
 
             width += 120 + 10;
@@ -272,6 +283,26 @@ namespace Multiplayer.Client
             }
 
             width += 120;
+        }
+        
+        private static void CheckGameVersionAndMods(SaveFile file, Action action)
+        {
+            ScribeMetaHeaderUtility.lastMode = ScribeMetaHeaderUtility.ScribeHeaderMode.Map;
+            ScribeMetaHeaderUtility.loadedGameVersion = file.rwVersion;
+            ScribeMetaHeaderUtility.loadedModIdsList = file.modIds.ToList();
+            ScribeMetaHeaderUtility.loadedModNamesList = file.modNames.ToList();
+
+            if (!ScribeMetaHeaderUtility.TryCreateDialogsForVersionMismatchWarnings(action))
+            {
+                action();
+            }
+            else
+            {
+                Find.WindowStack.Windows
+                    .OfType<Dialog_MessageBox>()
+                    .Where(w => w.buttonAText == "LoadAnyway".Translate())
+                    .Do(w => w.buttonAText = "Continue anyway");
+            }
         }
 
         private void DrawSaveList(List<SaveFile> saves, float width, ref float y)
@@ -321,17 +352,14 @@ namespace Multiplayer.Client
                     bool autosave = saveFile.replaySections > 1;
 
                     GUI.color = autosave ? new Color(0.8f, 0.8f, 0, 0.6f) : new Color(0.8f, 0.8f, 0);
-                    var outdated = new Rect(infoText.x - 70, infoText.y + 8f, 70, 24f);
+                    var outdated = new Rect(infoText.x - 80, infoText.y + 8f, 80, 24f);
                     Widgets.Label(outdated, "MpReplayOutdated".Translate());
 
                     string text = "MpReplayOutdatedDesc1".Translate(saveFile.protocol, MpVersion.Protocol) + "\n\n" + "MpReplayOutdatedDesc2".Translate() + "\n" + "MpReplayOutdatedDesc3".Translate();
                     if (autosave)
                         text += "\n\n" + "MpReplayOutdatedDesc4".Translate();
 
-                    TooltipHandler.TipRegion(
-                        outdated,
-                        text
-                    );
+                    TooltipHandler.TipRegion(outdated, text);
                 }
 
                 Text.Font = GameFont.Small;
@@ -372,11 +400,22 @@ namespace Multiplayer.Client
                 Find.WindowStack.Add(new Dialog_RenameFile(save.file, () => ReloadFiles()));
             });
 
-            if (MpVersion.IsDebug)
-                yield return new FloatMenuOption("Debug info", () =>
+            if (!MpVersion.IsDebug) yield break;
+
+            yield return new FloatMenuOption("Debug info", () =>
+            {
+                Find.WindowStack.Add(new DebugTextWindow(DesyncDebugInfo.Get(Replay.ForLoading(save.file))));
+            });
+
+            yield return new FloatMenuOption("Subscribe to Steam mods", () =>
+            {
+                for (int i = 0; i < save.modIds.Length; i++)
                 {
-                    Find.WindowStack.Add(new DebugTextWindow(DesyncDebugInfo.Get(Replay.ForLoading(save.file))));
-                });
+                    if (!ulong.TryParse(save.modIds[i], out ulong id)) continue;
+                    Log.Message($"Subscribed to: {save.modNames[i]}");
+                    SteamUGC.SubscribeItem(new PublishedFileId_t(id));
+                }
+            });
         }
 
         private List<SteamPersona> friends = new List<SteamPersona>();
@@ -444,7 +483,10 @@ namespace Multiplayer.Client
                         var conn = new SteamClientConn(friend.serverHost);
                         conn.username = Multiplayer.username;
                         Multiplayer.session = new MultiplayerSession();
+
                         Multiplayer.session.client = conn;
+                        Multiplayer.session.ReapplyPrefs();
+
                         conn.State = ConnectionStateEnum.ClientSteam;
                     }
                 }
@@ -469,7 +511,9 @@ namespace Multiplayer.Client
         {
             ipBuffer = Widgets.TextField(new Rect(inRect.center.x - 200 / 2, 15f, 200, 35f), ipBuffer);
 
-            if (Widgets.ButtonText(new Rect(inRect.center.x - 100f / 2, 60f, 100f, 35f), "MpConnectButton".Translate()))
+            const float btnWidth = 115f;
+
+            if (Widgets.ButtonText(new Rect(inRect.center.x - btnWidth / 2, 60f, btnWidth, 35f), "MpConnectButton".Translate()))
             {
                 string ip = ipBuffer.Trim();
 
@@ -664,8 +708,9 @@ namespace Multiplayer.Client
         public string gameName;
 
         public string rwVersion;
-        public string[] modNames;
-        public string[] modIds;
+        public string[] modNames = new string[0];
+        public string[] modIds = new string[0];
+        public int[] modAssemblyHashes = new int[0];
 
         public int protocol;
 

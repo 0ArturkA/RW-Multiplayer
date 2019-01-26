@@ -34,7 +34,7 @@ namespace Multiplayer.Client
             Multiplayer.session.mods.remoteRwVersion = data.ReadString();
             Multiplayer.session.mods.remoteModNames = data.ReadPrefixedStrings();
 
-            var defs = ClientUtil.CollectDefInfos();
+            var defs = Multiplayer.localDefInfos;
             Multiplayer.session.mods.defInfo = defs;
 
             var response = new ByteWriter();
@@ -208,7 +208,9 @@ namespace Multiplayer.Client
         public void HandleKeepAlive(ByteReader data)
         {
             int id = data.ReadInt32();
-            connection.Send(Packets.Client_KeepAlive, id);
+            int ticksBehind = TickPatch.tickUntil - TickPatch.Timer;
+
+            connection.Send(Packets.Client_KeepAlive, id, (ticksBehind << 1) | (TickPatch.Skipping ? 1 : 0));
         }
 
         [PacketHandler(Packets.Server_Command)]
@@ -245,10 +247,14 @@ namespace Multiplayer.Client
             }
             else if (action == PlayerListAction.Latencies)
             {
-                int[] latencies = data.ReadPrefixedInts();
+                int count = data.ReadInt32();
 
-                for (int i = 0; i < Multiplayer.session.players.Count; i++)
-                    Multiplayer.session.players[i].latency = latencies[i];
+                for (int i = 0; i < count; i++)
+                {
+                    var player = Multiplayer.session.players[i];
+                    player.latency = data.ReadInt32();
+                    player.ticksBehind = data.ReadInt32();
+                }
             }
             else if (action == PlayerListAction.Status)
             {
@@ -375,9 +381,12 @@ namespace Multiplayer.Client
         public void HandleDebug(ByteReader data)
         {
             int tick = data.ReadInt32();
+            int start = data.ReadInt32();
+            int end = data.ReadInt32();
             var info = Multiplayer.game.sync.buffer.FirstOrDefault(b => b.startTick == tick);
 
-            File.WriteAllText("arbiter_traces.txt", info?.TracesToString() ?? "null");
+            Log.Message($"{info?.traces.Count} arbiter traces");
+            File.WriteAllText("arbiter_traces.txt", info?.TracesToString(start, end) ?? "null");
         }
     }
 
